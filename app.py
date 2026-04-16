@@ -4,17 +4,30 @@ import pandas as pd
 from PIL import Image
 from fpdf import FPDF
 from datetime import datetime
-import tensorflow as tf
 import os
 
+# ---------------- SAFE IMPORT ----------------
+try:
+    import tflite_runtime.interpreter as tflite
+except:
+    import tensorflow.lite as tflite
+
 # ---------------- LOAD MODEL ----------------
-model_path = "kidney_model.h5"
+model_path = "kidney_model.tflite"
 
 if not os.path.exists(model_path):
-    st.error("❌ Model file not found!")
+    st.error("❌ Model file not found! Upload kidney_model.tflite to repo.")
     st.stop()
 
-model = tf.keras.models.load_model(model_path, compile=False)
+try:
+    interpreter = tflite.Interpreter(model_path=model_path)
+    interpreter.allocate_tensors()
+except Exception as e:
+    st.error(f"❌ Model loading failed: {e}")
+    st.stop()
+
+input_details = interpreter.get_input_details()
+output_details = interpreter.get_output_details()
 
 classes = ['Cyst', 'Normal', 'Stone', 'Tumor']
 
@@ -95,24 +108,31 @@ if page == "🏠 Prediction":
             st.image(img, caption="Uploaded Image", use_column_width=True)
 
         if st.button("Analyze"):
+
             if not name or not phone:
                 st.warning("⚠️ Please fill all details")
                 st.stop()
 
-            # Preprocess image
+            # -------- PREPROCESS --------
             img_resized = img.resize((128,128))
             img_array = np.array(img_resized) / 255.0
-            img_array = np.expand_dims(img_array, axis=0)
+            img_array = np.expand_dims(img_array, axis=0).astype("float32")
 
-            # Prediction
-            pred = model.predict(img_array)
+            # -------- PREDICTION --------
+            try:
+                interpreter.set_tensor(input_details[0]['index'], img_array)
+                interpreter.invoke()
+                pred = interpreter.get_tensor(output_details[0]['index'])
+            except Exception as e:
+                st.error(f"❌ Prediction failed: {e}")
+                st.stop()
+
             confidence = float(np.max(pred) * 100)
             result = classes[np.argmax(pred)]
 
             with col2:
                 st.subheader("Prediction Result")
 
-                # Chart
                 df = pd.DataFrame({
                     "Condition": classes,
                     "Probability": pred[0]*100
@@ -134,7 +154,6 @@ if page == "🏠 Prediction":
 
                     st.write(info[result])
 
-                    # PDF download
                     pdf_file = create_pdf(name, age, gender, state, phone, result, confidence)
 
                     with open(pdf_file, "rb") as f:
@@ -143,7 +162,7 @@ if page == "🏠 Prediction":
     st.markdown("---")
     st.warning("⚠️ This is not a medical diagnosis")
 
-# ================== ABOUT PAGE ==================
+# ================== ABOUT ==================
 elif page == "ℹ️ About":
 
     st.title("About")
@@ -151,7 +170,7 @@ elif page == "ℹ️ About":
     st.write("""
     AI-based kidney disease detection system.
 
-    - Uses Deep Learning (CNN)
+    - Uses TFLite model
     - Predicts from CT scan images
     - Generates PDF reports
     """)
